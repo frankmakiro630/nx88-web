@@ -47,6 +47,6 @@ async function discordAuth(request, env, url) {
     if (!dbRes.ok) return json(500, { error:'Supabase upsert failed', detail:dbData.message || dbData.hint || dbText });
     const dbUser = Array.isArray(dbData)&&dbData[0]?dbData[0]:row;
     const bytes=crypto.getRandomValues(new Uint8Array(32)); const token=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
-    return json(200,{token,user:{id,username,email:du.email||'',avatar:hash,avatarUrl,balance:Number(dbUser.balance||1000),vipLevel:0,vipName:'Member',vipProgress:0}});
+    return json(200,{token,user:{id,username,email:du.email||'',avatar:hash,avatarUrl,balance:Number(dbUser.balance ?? 0),vipLevel:0,vipName:'Member',vipProgress:0}});
   } catch (err) { return json(500,{error:'Authentication server error',detail:err?.message||String(err)}); }
 }
