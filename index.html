@@ -3386,7 +3386,7 @@ function doLogin() {
   
   var authUrl = DISCORD_CONFIG.API_BASE + '/oauth2/authorize?' +
     'client_id=' + encodeURIComponent(DISCORD_CONFIG.CLIENT_ID) +
-    '&redirect_uri='https://nx88-web.frankcute2603.workers.dev/auth/discord/callback'&response_type=code' +
+    '&redirect_uri=' + encodeURIComponent(DISCORD_CONFIG.REDIRECT_URI) + '&response_type=code' +
     '&scope=' + encodeURIComponent(DISCORD_CONFIG.SCOPES) +
     '&state=' + encodeURIComponent(state);
   
