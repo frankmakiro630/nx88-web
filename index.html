@@ -1377,6 +1377,35 @@ body{min-height:100vh;background:radial-gradient(ellipse at 50% 0%,#0d1f3a 0%,#0
    NX88 CASINO — PREMIUM SLOT ENGINE
    Giữ nguyên toàn bộ API calls, chỉ nâng cấp UI/UX
 ════════════════════════════════════════════════════════ */
+
+// ── Persistent auth helpers ───────────────────────────────────
+function saveAuthState(){
+  try{
+    if(typeof S !== 'undefined' && S.token && S.user){
+      localStorage.setItem('nx88_auth', JSON.stringify({token:S.token,user:S.user}));
+    }
+  }catch(e){}
+}
+function mergeUserFromServer(remote){
+  var cached=(typeof S !== 'undefined' && S.user)||{};
+  S.user=Object.assign({}, cached, remote||{});
+  if(!S.user.username) S.user.username=cached.username||'User';
+  if(!S.user.avatar && cached.avatar) S.user.avatar=cached.avatar;
+  if(!S.user.avatarUrl && cached.avatarUrl) S.user.avatarUrl=cached.avatarUrl;
+  saveAuthState();
+  if(typeof updateHeader==='function') updateHeader();
+  if(typeof updateSideProfile==='function') updateSideProfile();
+}
+async function refreshCurrentUser(){
+  if(typeof S==='undefined' || !S.token) return;
+  try{
+    var u=await api('/auth/me');
+    if(u && u.id) mergeUserFromServer(u);
+  }catch(e){
+    console.warn('NX88 refresh failed',e);
+  }
+}
+
 var S = { token:null, user:null, sock:null, lbData:null, lbMode:'balance' };
 
 // ── Auto spin state ──
@@ -3479,7 +3508,7 @@ function finishAuth(data) {
   S.user = data.user;
   
   var authData = {token: data.token, user: data.user};
-  localStorage.setItem('nx88_auth', JSON.stringify(authData)); saveAuthState();
+  localStorage.setItem('nx88_auth', JSON.stringify(authData));
   
   // Update UI
   updateAuthUI();
