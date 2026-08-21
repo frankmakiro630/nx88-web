@@ -1700,7 +1700,7 @@ function onSpinComplete(d, results) {
   // [REALTIME] Update balance + VIP after spin
   var newBal = d.newBal || d.newBalance;
   var newBalFmt = d.newBalFmt || d.newBalanceFormatted;
-  if (S.user) { S.user.balance = newBal; if(d.vipLevel){S.user.vipLevel=d.vipLevel;S.user.vipName=d.vipName;S.user.vipProgress=d.vipProgress;} }
+  if (S.user) { S.user.balance = newBal; saveAuthState(); if(d.vipLevel){S.user.vipLevel=d.vipLevel;S.user.vipName=d.vipName;S.user.vipProgress=d.vipProgress;} }
   var balTxt = document.getElementById('bal-txt');
   if (balTxt) balTxt.textContent = (newBalFmt||fmt(newBal))+'$';
   var siBal  = document.getElementById('si-bal');
@@ -1927,7 +1927,7 @@ window.onload = function() {
     }).catch(function(){ clearToken(); S.token=null; updateHeader(); });
   } else { updateHeader(); }
 
-  connectSocket(); loadStats(); loadLeaderboard();
+  connectSocket(); loadStats(); loadLeaderboard();; setInterval(refreshCurrentUser, 3000);
   setTimeout(loadStats,3000);
 
   } catch(err) {
@@ -3479,7 +3479,7 @@ function finishAuth(data) {
   S.user = data.user;
   
   var authData = {token: data.token, user: data.user};
-  localStorage.setItem('nx88_auth', JSON.stringify(authData));
+  localStorage.setItem('nx88_auth', JSON.stringify(authData)); saveAuthState();
   
   // Update UI
   updateAuthUI();
