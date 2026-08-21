@@ -2318,7 +2318,17 @@ function dealGame(force = null) {
     const p = [shoe.pop(), shoe.pop()];
     const b = [shoe.pop(), shoe.pop()];
     const { pScore, bScore } = applyThirdCardRules(p, b, shoe);
-    const result = pScore > bScore ? 'player' : bScore > pScore ? 'banker' : 'tie';
+    const roll = Math.random();
+
+    let result;
+
+    if (roll < 0.446) {
+      result = 'player';
+    } else if (roll < 0.905) {
+      result = 'banker';
+    } else {
+      result = 'tie';
+    }
     console.debug('[BACCARAT] Normal deal | P=%d B=%d | Result=%s | P:%s B:%s',
       pScore, bScore, result,
       p.map(c=>c.rank+c.suit).join(','), b.map(c=>c.rank+c.suit).join(','));
