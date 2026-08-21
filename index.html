@@ -1956,7 +1956,7 @@ window.onload = function() {
     }).catch(function(){ clearToken(); S.token=null; updateHeader(); });
   } else { updateHeader(); }
 
-  connectSocket(); loadStats(); loadLeaderboard();; setInterval(refreshCurrentUser, 3000);
+  connectSocket(); loadStats(); loadLeaderboard(); setInterval(loadStats, 10000);; setInterval(refreshCurrentUser, 3000);
   setTimeout(loadStats,3000);
 
   } catch(err) {
@@ -2065,9 +2065,8 @@ function updateSideProfile(){
 
 // ── Stats ─────────────────────────────────────────────────────
 function loadStats(){
-  if(!S.token)return;
   api('/api/stats').then(function(d){
-    var rEl=document.getElementById('stat-rtp');if(rEl){var rC=rEl.closest&&rEl.closest('.stat-cell');if(S.user&&S.user.admin&&d.rtp){rEl.textContent=d.rtp+'%';if(rC)rC.style.display='';}else if(rC)rC.style.display='none';}
+    var rEl=document.getElementById('stat-rtp');if(rEl){rEl.textContent=(d.rtp??'--')+'%';var rC=rEl.closest&&rEl.closest('.stat-cell');if(rC)rC.style.display='';}var on=document.getElementById('stat-online');if(on)on.textContent=d.online??0;var hon=document.getElementById('online-count');if(hon)hon.textContent=d.online??0;
     var els={
       'stat-jackpot':(d.jackpot/1000000000).toFixed(1)+' Tỷ',
       'stat-players':d.players,
@@ -2886,7 +2885,7 @@ function showBacToast(msg,type){
 function bacInit() {
   // Sync balance từ NX88
   if(window.S && window.S.user) {
-    state.balance = S.user.balance || 0;
+    state.balance = Number(S.user.balance ?? 0);
     updateBalance();
   }
   // Listen for balance updates from socket
@@ -2936,8 +2935,8 @@ function bacPostResult(result) {
     +' bet='+totalBet+' payout='+totalPayout+' net='+netProfit
     +' (P:'+betP+'→'+payoutP+' B:'+betB+'→'+payoutB+' T:'+betT+'→'+payoutT+')');
 
-  // Cộng payout vào balance client
-  state.balance += totalPayout;
+  // Balance is authoritative on the Worker. Do not add payout locally,
+  // otherwise periodic auth refresh can resurrect an old balance.
   state.profit  = (state.profit||0) + netProfit;
   if(totalPayout > 0 && netProfit > 0) state.wins++;
   if(totalPayout > (state.bestWin||0)) state.bestWin = totalPayout;
@@ -3293,7 +3292,7 @@ showPage = function(name) {
     setTimeout(function() {
       renderActiveChips();
       if (window.S && window.S.user) {
-        state.balance = S.user.balance || 0;
+        state.balance = Number(S.user.balance ?? 0);
         state.selectedChip = state.selectedChip || 1000000;
         updateBalance();
       }
