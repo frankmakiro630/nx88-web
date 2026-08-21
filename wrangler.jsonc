@@ -1,6 +1,6 @@
 {
   "name": "nx88-web",
-  "main": "_worker.js",
+  "main": "worker.js",
   "compatibility_date": "2026-08-21",
   "assets": {
     "directory": ".",
