@@ -13,6 +13,9 @@ export default {
       if (url.pathname === '/api/leaderboard' && request.method === 'GET') return leaderboardInfo(env);
       if (url.pathname === '/api/baccarat/bet' && request.method === 'POST') return baccaratBet(request, env);
       if (url.pathname === '/api/baccarat/result' && request.method === 'POST') return baccaratResult(request, env);
+      if (url.pathname === '/api/game/play' && request.method === 'POST') return playTableGame(request, env);
+      if (url.pathname === '/api/hoantra' && request.method === 'GET') return hoantraInfo(request, env);
+      if ((url.pathname === '/api/hoantra/claim' || url.pathname === '/api/user/claim-hoantra') && request.method === 'POST') return hoantraClaim(request, env);
       if (url.pathname === '/auth/discord/callback') return env.ASSETS.fetch(new URL('/', url));
       return env.ASSETS.fetch(request);
     } catch (err) { return json(500,{error:'Server error',detail:err?.message||String(err)}); }
@@ -24,7 +27,7 @@ function makeToken(id){return btoa(JSON.stringify({id:String(id),iat:Date.now()}
 function readToken(req){const h=req.headers.get('Authorization')||'';const t=h.replace(/^Bearer\s+/i,'');if(!t)return null;try{const p=t.replaceAll('-','+').replaceAll('_','/');const pad=p+'='.repeat((4-p.length%4)%4);const o=JSON.parse(atob(pad));return o?.id?String(o.id):null}catch{return null}}
 async function db(env,path,opts={}){const c=cfg(env);return fetch(c.url+'/rest/v1/'+path,{...opts,headers:{apikey:c.key,Authorization:'Bearer '+c.key,'Content-Type':'application/json',...(opts.headers||{})}})}
 async function getUser(env,id){const r=await db(env,'users?user_id=eq.'+encodeURIComponent(id)+'&select=*');const a=await r.json();return Array.isArray(a)?a[0]:null}
-function publicUser(r){return {id:String(r.user_id),username:r.username||'User',avatar:r.avatar||'',avatarUrl:r.avatar||'',balance:Number(r.balance??0),vipLevel:Number(r.vip_level??0),vipName:r.vip_name||'Member',vipProgress:Number(r.vip_progress??0),gamesPlayed:Number(r.games_played??0),wins:Number(r.wins??0),losses:Number(r.losses??0)}}
+function publicUser(r){return {id:String(r.user_id),username:r.username||'User',avatar:r.avatar||'',avatarUrl:r.avatar||'',balance:Number(r.balance??0),vipLevel:Number(r.vip_level??0),vipName:r.vip_name||'Member',vipProgress:Number(r.vip_progress??0),vipNeed:Number(r.vip_need??0),gamesPlayed:Number(r.games_played??0),wins:Number(r.wins??0),losses:Number(r.losses??0)}}
 async function authMe(request,env){const id=readToken(request);if(!id)return json(401,{error:'Unauthorized'});const u=await getUser(env,id);if(!u)return json(401,{error:'User not found'});return json(200,publicUser(u))}
 async function discordAuth(request,env,url){const input=await request.json().catch(()=>({}));if(!input.code)return json(400,{error:'Missing OAuth code'});const redirectUri=url.origin+'/auth/discord/callback';if(input.redirect_uri&&input.redirect_uri!==redirectUri)return json(400,{error:'Invalid redirect URI'});const clientId=env.DISCORD_CLIENT_ID||'1501947066560020490',secret=env.DISCORD_CLIENT_SECRET;if(!secret)return json(500,{error:'Discord client secret is not configured'});const form=new URLSearchParams({client_id:clientId,client_secret:secret,grant_type:'authorization_code',code:input.code,redirect_uri:redirectUri});const tr=await fetch('https://discord.com/api/v10/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:form.toString()});const td=await tr.json().catch(()=>({}));if(!tr.ok||!td.access_token)return json(401,{error:td.error_description||'Discord token exchange failed'});const ur=await fetch('https://discord.com/api/v10/users/@me',{headers:{Authorization:'Bearer '+td.access_token}});const du=await ur.json().catch(()=>({}));if(!ur.ok||!du.id)return json(401,{error:du.message||'Failed to fetch Discord user'});const id=String(du.id),username=du.global_name||du.username||('User'+id.slice(-4)),hash=du.avatar||'';const avatar=hash?`https://cdn.discordapp.com/avatars/${id}/${hash}.${hash.startsWith('a_')?'gif':'png'}?size=128`:'';const row={user_id:id,username,avatar,updated_at:new Date().toISOString()};const r=await db(env,'users?on_conflict=user_id',{method:'POST',headers:{Prefer:'resolution=merge-duplicates,return=representation'},body:JSON.stringify(row)});const txt=await r.text();let data=[];try{data=txt?JSON.parse(txt):[]}catch{}if(!r.ok)return json(500,{error:'Supabase upsert failed',detail:data.message||data.hint||txt});const u=Array.isArray(data)&&data[0]?data[0]:await getUser(env,id);return json(200,{token:makeToken(id),user:publicUser(u||{...row,balance:0})})}
 async function slotSpin(request,env){const id=readToken(request);if(!id)return json(401,{error:'Unauthorized'});const body=await request.json().catch(()=>({}));const amount=Math.floor(Number(body.amount||0));if(!Number.isFinite(amount)||amount<=0)return json(400,{error:'Invalid bet'});const u=await getUser(env,id);if(!u)return json(404,{error:'User not found'});const bal=Number(u.balance??0);if(bal<amount)return json(400,{error:'Không đủ tiền'});const syms=['🍒','🍋','🔔','7️⃣','💎','👑'];const slot=Array.from({length:5},()=>syms[Math.floor(Math.random()*syms.length)]);const counts={};slot.forEach(x=>counts[x]=(counts[x]||0)+1);const max=Math.max(...Object.values(counts));let mult=max===5?80:max===4?10:max===3?3:0;const jackpot=max===5;const reward=Math.floor(amount*mult);const newBalance=bal-amount+reward;const games=Number(u.games_played??0)+1,wins=Number(u.wins??0)+(reward>0?1:0),losses=Number(u.losses??0)+(reward>0?0:1);const r=await db(env,'users?user_id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({balance:newBalance,games_played:games,wins,losses,updated_at:new Date().toISOString()})});if(!r.ok)return json(500,{error:'Không thể cập nhật balance'});return json(200,{slot,reward,jackpot,newBalance,newBal:newBalance,newBalanceFormatted:newBalance.toLocaleString('vi-VN'),newBalFmt:newBalance.toLocaleString('vi-VN'),vipLevel:Number(u.vip_level??0),vipName:u.vip_name||'Member',vipProgress:Number(u.vip_progress??0)})}
@@ -77,4 +80,71 @@ async function baccaratResult(request,env){
     updated_at:new Date().toISOString()
   });
   return json(200,{newBalance:Number(row.balance??bal+payout)});
+}
+
+
+function vipRate(level){ const lv=Math.max(1,Number(level||1)); return Math.min(20,2+((lv-1)*18/63)); }
+function vipFromWager(wager){
+  const w=Math.max(0,Number(wager||0));
+  // 64 levels, every 100,000 wagered advances one level.
+  const level=Math.min(64,Math.floor(w/100000)+1);
+  const base=(level-1)*100000, progress=level>=64?100:Math.floor(((w-base)/100000)*100);
+  return {level,progress,need:level>=64?0:Math.max(0,100000-(w-base))};
+}
+async function gameLedgerPatch(env,id,u,bet,payout,won){
+  const oldWager=Number(u.total_wager||0), wager=oldWager+bet;
+  const v=vipFromWager(wager), rate=vipRate(v.level);
+  const pending=Number(u.cashback_pending||0)+Math.floor(bet*rate/100);
+  const patch={
+    balance:Number(u.balance||0)-bet+payout,
+    games_played:Number(u.games_played||0)+1,
+    wins:Number(u.wins||0)+(won?1:0),
+    losses:Number(u.losses||0)+(won?0:1),
+    total_wager:wager,
+    cashback_pending:pending,
+    vip_level:v.level,vip_progress:v.progress,vip_need:v.need,
+    updated_at:new Date().toISOString()
+  };
+  return patchUser(env,id,patch);
+}
+async function playTableGame(request,env){
+  const id=readToken(request); if(!id)return json(401,{error:'Unauthorized'});
+  const b=await request.json().catch(()=>({}));
+  const game=String(b.game||''), choice=String(b.choice||'');
+  const bet=Math.floor(Number(b.bet||0));
+  if(!Number.isFinite(bet)||bet<=0)return json(400,{error:'Invalid bet'});
+  const u=await getUser(env,id); if(!u)return json(404,{error:'User not found'});
+  if(Number(u.balance||0)<bet)return json(400,{error:'Không đủ tiền'});
+  let outcome,payout=0,detail={};
+  if(game==='xocdia'){
+    const reds=Array.from({length:4},()=>Math.random()<0.5?1:0).reduce((a,c)=>a+c,0);
+    outcome=reds%2?'odd':'even';
+    if(choice===outcome)payout=bet*2;
+    detail={reds,whites:4-reds,label:outcome==='even'?'CHẴN':'LẺ'};
+  }else if(game==='taixiu'){
+    const dice=Array.from({length:3},()=>1+Math.floor(Math.random()*6));
+    const total=dice.reduce((a,c)=>a+c,0);
+    outcome=total>=11?'tai':'xiu';
+    if(choice===outcome)payout=bet*2;
+    detail={dice,total,label:outcome==='tai'?'TÀI':'XỈU'};
+  }else return json(400,{error:'Unsupported game'});
+  const won=payout>bet;
+  const row=await gameLedgerPatch(env,id,u,bet,payout,won);
+  return json(200,{game,outcome,payout,newBalance:Number(row.balance||0),won,detail,
+    vipLevel:Number(row.vip_level||0),vipProgress:Number(row.vip_progress||0)});
+}
+async function hoantraInfo(request,env){
+  const id=readToken(request); if(!id)return json(401,{error:'Unauthorized'});
+  const u=await getUser(env,id); if(!u)return json(404,{error:'User not found'});
+  const pending=Math.max(0,Number(u.cashback_pending||0));
+  return json(200,{pending,totalReceived:Number(u.cashback_total||0),percent:Number(vipRate(u.vip_level||1).toFixed(1))});
+}
+async function hoantraClaim(request,env){
+  const id=readToken(request); if(!id)return json(401,{error:'Unauthorized'});
+  const u=await getUser(env,id); if(!u)return json(404,{error:'User not found'});
+  const amount=Math.max(0,Math.floor(Number(u.cashback_pending||0)));
+  if(amount<=0)return json(200,{success:false,error:'Chưa có hoàn trả để nhận',amount:0,newBalance:Number(u.balance||0)});
+  const row=await patchUser(env,id,{balance:Number(u.balance||0)+amount,cashback_pending:0,
+    cashback_total:Number(u.cashback_total||0)+amount,updated_at:new Date().toISOString()});
+  return json(200,{success:true,refund:amount,amount,newBalance:Number(row.balance||0)});
 }

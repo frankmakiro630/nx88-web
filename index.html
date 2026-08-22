@@ -517,7 +517,7 @@ body.shake{animation:screenShake .4s ease}
               <button class="gc-play">Vào Bàn</button>
             </div>
           </div>
-          <div class="gc" onclick="notify('Xóc Đĩa — dùng lệnh /xocdia trong Discord','ℹ️')">
+          <div class="gc" onclick="showPage('xocdia')">
             <div class="gc-badge badge-new">NEW</div>
             <div class="gc-thumb bg3">🎲</div>
             <div class="gc-body">
@@ -527,7 +527,7 @@ body.shake{animation:screenShake .4s ease}
               <button class="gc-play">Chơi Ngay</button>
             </div>
           </div>
-          <div class="gc" onclick="notify('Tài Xỉu — dùng lệnh /taixiu trong Discord','ℹ️')">
+          <div class="gc" onclick="showPage('taixiu')">
             <div class="gc-thumb bg4">🎯</div>
             <div class="gc-body">
               <div class="gc-cat cat-red">TÀI XỈU</div>
@@ -828,6 +828,47 @@ body.shake{animation:screenShake .4s ease}
 
 
 <!-- ── BACCARAT PAGE ────────────────────────────────────────────────────── -->
+
+<div id="page-xocdia" class="page table-page">
+  <div class="table-shell">
+    <div class="table-top"><div><div class="table-kicker">LIVE CASINO</div><h2>🎲 XÓC ĐĨA ROYAL</h2><p>4 đồng xu · Chẵn / Lẻ · Trả thưởng x2</p></div><div class="table-balance">Số dư: <b id="xd-balance">0</b> xu</div></div>
+    <div class="felt-table xoc-felt">
+      <div class="game-center"><div class="bowl" id="xd-bowl">🥣</div><div class="coin-row" id="xd-coins">⚪ ⚪ ⚪ ⚪</div><div class="game-status" id="xd-status">Đặt cược và mở bát!</div></div>
+      <div class="bet-grid two">
+        <button class="table-bet xd-choice" data-choice="even" onclick="selectTableChoice('xocdia','even')"><span>⚪</span><b>CHẴN</b><small>1 : 1</small></button>
+        <button class="table-bet xd-choice" data-choice="odd" onclick="selectTableChoice('xocdia','odd')"><span>🔴</span><b>LẺ</b><small>1 : 1</small></button>
+      </div>
+    </div>
+    <div class="table-controls"><div class="chip-row"><button onclick="setTableBet('xocdia',1000)">1K</button><button onclick="setTableBet('xocdia',5000)">5K</button><button onclick="setTableBet('xocdia',10000)">10K</button><button onclick="setTableBet('xocdia',50000)">50K</button></div><input id="xd-bet" type="number" min="1" value="1000"><button class="deal-btn" onclick="playTableGame('xocdia')">MỞ BÁT</button></div>
+  </div>
+</div>
+
+<div id="page-taixiu" class="page table-page">
+  <div class="table-shell">
+    <div class="table-top"><div><div class="table-kicker">SIC BO LIVE</div><h2>🎯 TÀI XỈU ROYAL</h2><p>3 xúc xắc · Tài / Xỉu · Trả thưởng x2</p></div><div class="table-balance">Số dư: <b id="tx-balance">0</b> xu</div></div>
+    <div class="felt-table tai-felt">
+      <div class="game-center"><div class="dice-box" id="tx-dice">🎲 🎲 🎲</div><div class="game-status" id="tx-status">Chọn cửa và lắc xúc xắc!</div></div>
+      <div class="bet-grid two">
+        <button class="table-bet tx-choice" data-choice="xiu" onclick="selectTableChoice('taixiu','xiu')"><span>⬇️</span><b>XỈU</b><small>4 – 10 · 1 : 1</small></button>
+        <button class="table-bet tx-choice" data-choice="tai" onclick="selectTableChoice('taixiu','tai')"><span>⬆️</span><b>TÀI</b><small>11 – 17 · 1 : 1</small></button>
+      </div>
+    </div>
+    <div class="table-controls"><div class="chip-row"><button onclick="setTableBet('taixiu',1000)">1K</button><button onclick="setTableBet('taixiu',5000)">5K</button><button onclick="setTableBet('taixiu',10000)">10K</button><button onclick="setTableBet('taixiu',50000)">50K</button></div><input id="tx-bet" type="number" min="1" value="1000"><button class="deal-btn" onclick="playTableGame('taixiu')">LẮC XÚC XẮC</button></div>
+  </div>
+</div>
+<style>
+.table-page{background:radial-gradient(circle at 50% 10%,#17332a 0,#080d10 45%,#040506 100%);min-height:100vh;padding:30px 14px}
+.table-shell{max-width:1050px;margin:auto;border:1px solid rgba(255,215,0,.28);border-radius:20px;overflow:hidden;background:#0a0e11;box-shadow:0 25px 80px rgba(0,0,0,.55)}
+.table-top{display:flex;justify-content:space-between;align-items:center;padding:22px 28px;background:linear-gradient(90deg,#121718,#20190b);border-bottom:1px solid rgba(255,215,0,.18)}
+.table-top h2{margin:3px 0;font-size:28px;color:#f8d56b}.table-top p,.table-kicker{margin:0;color:#9ca3af;font-size:12px;letter-spacing:1px}.table-kicker{color:#f5c542}.table-balance{padding:12px 16px;border:1px solid rgba(255,215,0,.25);border-radius:12px;color:#ddd}.table-balance b{color:#f5c542}
+.felt-table{margin:22px;min-height:430px;border-radius:50% 50% 18px 18px;background:radial-gradient(ellipse at center,#176247,#0d382b 58%,#061c16 100%);border:10px solid #24190e;box-shadow:inset 0 0 0 2px #d2a944,inset 0 0 70px rgba(0,0,0,.5);padding:34px;position:relative}
+.tai-felt{background:radial-gradient(ellipse at center,#283f69,#14223b 60%,#070d1a 100%)}
+.game-center{text-align:center;padding:22px}.bowl{font-size:72px;filter:drop-shadow(0 8px 12px #000)}.coin-row,.dice-box{font-size:42px;min-height:60px;letter-spacing:8px}.game-status{color:#f5c542;font-weight:800;margin-top:10px}
+.bet-grid{display:grid;gap:18px;max-width:650px;margin:15px auto}.bet-grid.two{grid-template-columns:1fr 1fr}.table-bet{border:2px solid rgba(255,255,255,.12);background:rgba(0,0,0,.28);border-radius:18px;color:white;padding:22px;cursor:pointer;transition:.18s}.table-bet:hover,.table-bet.active{transform:translateY(-3px);border-color:#f5c542;background:rgba(245,197,66,.12)}.table-bet span,.table-bet b,.table-bet small{display:block}.table-bet span{font-size:30px}.table-bet b{font-size:24px;margin:5px}.table-bet small{color:#bbb}
+.table-controls{display:flex;gap:10px;align-items:center;padding:0 22px 25px}.chip-row{display:flex;gap:7px}.chip-row button,.deal-btn{background:#1a2226;border:1px solid #3b4448;color:#fff;border-radius:9px;padding:10px 13px;cursor:pointer;font-weight:800}.chip-row button:hover{border-color:#f5c542}.table-controls input{flex:1;background:#080b0c;border:1px solid #384248;color:#f5c542;padding:11px;border-radius:9px}.deal-btn{background:linear-gradient(135deg,#c99222,#f5cf5c);color:#211605;border:0;padding:12px 25px}
+@media(max-width:700px){.table-top,.table-controls{flex-direction:column;align-items:stretch}.felt-table{margin:10px;padding:12px;min-height:380px}.bet-grid.two{gap:8px}.table-bet{padding:14px}.table-top h2{font-size:22px}.chip-row{justify-content:center}}
+</style>
+
 <div id="page-baccarat" class="page">
 <style>
 /* Baccarat scoped styles */
@@ -2190,6 +2231,7 @@ function showPage(name){
     if(S.user){ if(pd)pd.style.display='block'; if(lp)lp.style.display='none'; updateSideProfile(); }
     else { if(pd)pd.style.display='none'; if(lp)lp.style.display='block'; }
   }
+  if((name==='xocdia'||name==='taixiu')&&S.user)syncTableBalances();
   if(name==='slot'&&S.user){
     var si=document.getElementById('si-bal'); var si2=document.getElementById('si-bal2');
     var v=(S.user.balFmt||fmt(S.user.balance));
@@ -2318,17 +2360,7 @@ function dealGame(force = null) {
     const p = [shoe.pop(), shoe.pop()];
     const b = [shoe.pop(), shoe.pop()];
     const { pScore, bScore } = applyThirdCardRules(p, b, shoe);
-    const roll = Math.random();
-
-    let result;
-
-    if (roll < 0.446) {
-      result = 'player';
-    } else if (roll < 0.495) {
-      result = 'banker';
-    } else {
-      result = 'tie';
-    }
+    const result = pScore > bScore ? 'player' : bScore > pScore ? 'banker' : 'tie';
     console.debug('[BACCARAT] Normal deal | P=%d B=%d | Result=%s | P:%s B:%s',
       pScore, bScore, result,
       p.map(c=>c.rank+c.suit).join(','), b.map(c=>c.rank+c.suit).join(','));
@@ -3850,25 +3882,14 @@ function showHoantra() {
 }
 
 function claimHoantra() {
-  if (!S.token) return;
-  
-  fetch('/api/user/claim-hoantra', {
-    method: 'POST',
-    headers: {'Authorization': 'Bearer ' + S.token, 'Content-Type': 'application/json'}
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (data.success) {
-      S.user.balance = data.newBalance;
-      updateUserDisplay();
-      notify('✅ Hoàn trả ' + formatBalance(data.amount) + ' nhận được!', '✅');
-    } else {
-      notify('❌ ' + data.error, '❌');
-    }
-  })
-  .catch(function(err) {
-    notify('❌ Error: ' + err.message, '❌');
-  });
+  if (!S.token) { notify('Đăng nhập trước!','⚠️'); return; }
+  fetch('/api/hoantra/claim', {method:'POST',headers:{'Authorization':'Bearer '+S.token,'Content-Type':'application/json'}})
+  .then(function(r){return r.json();}).then(function(d){
+    if(!d.success){notify('❌ '+(d.error||'Chưa có hoàn trả'),'⚠️');return;}
+    if(S.user)S.user.balance=d.newBalance;
+    saveAuthState(); updateAuthUI(); loadVipPage();
+    notify('✅ Đã nhận '+fmt(d.amount)+' xu hoàn trả!','🎉');
+  }).catch(function(e){notify('❌ '+e.message,'❌');});
 }
 
 // ────── INITIALIZATION ────────────────────────────────────────────────────────

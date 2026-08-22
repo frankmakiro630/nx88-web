@@ -1,548 +1,464 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, desc, func
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta
-from typing import Optional, List
-import httpx
-import jwt
 import os
+import asyncio
+import random
+from datetime import datetime, timedelta, timezone
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from supabase import create_client, Client
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Import local modules
-from config import settings
-from models import Base, User, GameHistory, Transaction, OAuthToken, BaccaratRound
-from schemas import (
-    DiscordAuthRequest, AuthResponse, UserResponse,
-    BaccaratResultRequest, BaccaratResultResponse,
-    LeaderboardEntry, LeaderboardResponse,
-    ErrorResponse, ClaimHoantrasResponse
-)
+TOKEN = os.getenv("DISCORD_TOKEN")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+DEFAULT_BALANCE = int(os.getenv("DEFAULT_BALANCE", "0"))
+DAILY_REWARD = int(os.getenv("DAILY_REWARD", "500"))
+DEV_GUILD_ID = os.getenv("DEV_GUILD_ID")
 
-# ════════════════════════════════════════════════════════════════════════════
-# DATABASE SETUP
-# ════════════════════════════════════════════════════════════════════════════
+if not TOKEN:
+    raise RuntimeError("Thiếu DISCORD_TOKEN trong file .env hoặc Environment Variables")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Thiếu SUPABASE_URL hoặc SUPABASE_KEY trong Environment Variables")
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {}
-)
+class NX88Bot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default(); intents.members = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    async def setup_hook(self):
+        if DEV_GUILD_ID:
+            guild = discord.Object(id=int(DEV_GUILD_ID)); self.tree.copy_global_to(guild=guild); await self.tree.sync(guild=guild)
+        else: await self.tree.sync()
 
-# Create all tables
-Base.metadata.create_all(bind=engine)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# ════════════════════════════════════════════════════════════════════════════
-# FASTAPI APP
-# ════════════════════════════════════════════════════════════════════════════
-
-app = FastAPI(
-    title=settings.APP_NAME,
-    version="1.0.0",
-    description="NX88 Casino Backend API"
-)
-
-# CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ════════════════════════════════════════════════════════════════════════════
-# UTILITIES
-# ════════════════════════════════════════════════════════════════════════════
-
-def create_access_token(user_id: str, expires_delta: Optional[timedelta] = None):
-    """Create JWT token"""
-    to_encode = {"sub": user_id, "type": "access"}
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
-
-def verify_token(token: str):
-    """Verify JWT token"""
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            return None
-        return user_id
-    except jwt.InvalidTokenError:
-        return None
-
-def get_current_user(token: str, db: Session) -> User:
-    """Get current user from token"""
-    if token.startswith("Bearer "):
-        token = token[7:]
-    
-    user_id = verify_token(token)
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
-    
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
-    return user
-
-# ════════════════════════════════════════════════════════════════════════════
-# DISCORD OAUTH ENDPOINTS
-# ════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/auth/discord", response_model=AuthResponse)
-async def discord_auth(request: DiscordAuthRequest, db: Session = Depends(get_db)):
-    """
-    Exchange Discord OAuth code for access token
-    """
-    try:
-        # Exchange code for Discord token
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(
-                f"{settings.DISCORD_API_URL}/oauth2/token",
-                data={
-                    "client_id": settings.DISCORD_CLIENT_ID,
-                    "client_secret": settings.DISCORD_CLIENT_SECRET,
-                    "grant_type": "authorization_code",
-                    "code": request.code,
-                    "redirect_uri": request.redirect_uri,
-                    "scope": "identify email"
-                }
-            )
-            
-            if token_response.status_code != 200:
-                raise Exception("Failed to get Discord token")
-            
-            discord_token = token_response.json()
-            access_token = discord_token.get("access_token")
-            
-            # Get Discord user info
-            user_response = await client.get(
-                f"{settings.DISCORD_API_URL}/users/@me",
-                headers={"Authorization": f"Bearer {access_token}"}
-            )
-            
-            if user_response.status_code != 200:
-                raise Exception("Failed to get Discord user info")
-            
-            discord_user = user_response.json()
-            user_id = discord_user.get("id")
-            username = discord_user.get("username")
-            email = discord_user.get("email")
-            avatar = discord_user.get("avatar")
-        
-        # Find or create user in database
-        user = db.query(User).filter(User.id == user_id).first()
-        
-        if not user:
-            # Create new user
-            user = User(
-                id=user_id,
-                username=username,
-                email=email,
-                avatar=avatar,
-                balance=1000000.0,  # Starting balance
-                vip_level=0,
-                xp=0
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
+    async def ensure_user(self, user):
+        existing = self.supabase.table("users").select("*").eq("user_id", str(user.id)).execute().data
+        avatar = str(user.display_avatar.url)
+        if existing:
+            self.supabase.table("users").update({"username":user.display_name,"avatar":avatar,"updated_at":datetime.now(timezone.utc).isoformat()}).eq("user_id",str(user.id)).execute()
         else:
-            # Update last login
-            user.last_login = datetime.utcnow()
-            # Update avatar if changed
-            if avatar and user.avatar != avatar:
-                user.avatar = avatar
-            db.commit()
-        
-        # Create JWT token
-        jwt_token = create_access_token(user_id)
-        
-        return AuthResponse(
-            token=jwt_token,
-            user=UserResponse.from_orm(user)
-        )
-    
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Authentication failed: {str(e)}"
-        )
+            self.supabase.table("users").insert({"user_id":str(user.id),"username":user.display_name,"avatar":avatar,"balance":DEFAULT_BALANCE}).execute()
 
-# ════════════════════════════════════════════════════════════════════════════
-# USER ENDPOINTS
-# ════════════════════════════════════════════════════════════════════════════
+    async def get_user(self, user):
+        await self.ensure_user(user)
+        data=self.supabase.table("users").select("*").eq("user_id",str(user.id)).single().execute().data
+        return data
 
-@app.get("/api/user/profile", response_model=UserResponse)
-async def get_profile(
-    authorization: str = None,
-    db: Session = Depends(get_db)
-):
-    """Get current user profile"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    
-    user = get_current_user(authorization, db)
-    return UserResponse.from_orm(user)
+    async def update_balance(self,user,amount,mode="set"):
+        row=await self.get_user(user); current=int(row.get("balance",0))
+        new=amount if mode=="set" else current+amount if mode=="add" else max(0,current-amount)
+        self.supabase.table("users").update({"balance":new,"updated_at":datetime.now(timezone.utc).isoformat()}).eq("user_id",str(user.id)).execute()
 
-@app.post("/api/user/claim-hoantra", response_model=ClaimHoantrasResponse)
-async def claim_hoantra(
-    authorization: str = None,
-    db: Session = Depends(get_db)
-):
-    """Claim VIP refund bonus"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    
-    user = get_current_user(authorization, db)
-    
-    # Calculate hoantra based on VIP level and recent bets
-    # Example: VIP 1 = 2%, VIP 2 = 5%, etc.
-    vip_rates = [0.02, 0.05, 0.08, 0.12, 0.15, 0.20]
-    rate = vip_rates[min(user.vip_level, len(vip_rates) - 1)]
-    
-    # Get total bet in last 24 hours
-    yesterday = datetime.utcnow() - timedelta(days=1)
-    recent_games = db.query(GameHistory).filter(
-        GameHistory.user_id == user.id,
-        GameHistory.created_at >= yesterday
-    ).all()
-    
-    total_bet_24h = sum(g.bet_amount for g in recent_games)
-    hoantra_amount = int(total_bet_24h * rate)
-    
-    if hoantra_amount <= 0:
-        return ClaimHoantrasResponse(
-            success=False,
-            amount=0,
-            new_balance=user.balance,
-            message="No refund available"
-        )
-    
-    # Add to balance
-    user.balance += hoantra_amount
-    
-    # Record transaction
-    transaction = Transaction(
-        user_id=user.id,
-        type="refund",
-        amount=hoantra_amount,
-        balance_before=user.balance - hoantra_amount,
-        balance_after=user.balance,
-        description=f"VIP {user.vip_level} Hoantra ({rate*100}%)"
-    )
-    
-    db.add(transaction)
-    db.commit()
-    db.refresh(user)
-    
-    return ClaimHoantrasResponse(
-        success=True,
-        amount=hoantra_amount,
-        new_balance=user.balance,
-        message=f"Claimed {hoantra_amount} hoantra"
+    async def record_game(self,user,won):
+        row=await self.get_user(user)
+        update={"games_played":int(row.get("games_played",0))+1,"wins":int(row.get("wins",0))+(1 if won else 0),"losses":int(row.get("losses",0))+(0 if won else 1)}
+        self.supabase.table("users").update(update).eq("user_id",str(user.id)).execute()
+
+bot = NX88Bot()
+
+def money(n: int) -> str:
+    return f"{n:,}".replace(",", ".")
+
+def profile_embed(user: discord.abc.User, row):
+    played, wins, losses = row.get("games_played",0), row.get("wins",0), row.get("losses",0)
+    rate = (wins / played * 100) if played else 0
+    avatar = user.display_avatar.url
+    e = discord.Embed(title=f"👤 Hồ sơ của {user.display_name}")
+    e.set_thumbnail(url=avatar)
+    e.add_field(name="💰 Balance", value=f"**{money(row.get('balance',0))}**", inline=True)
+    e.add_field(name="🎮 Đã chơi", value=str(played), inline=True)
+    e.add_field(name="🏆 Thắng", value=str(wins), inline=True)
+    e.add_field(name="💀 Thua", value=str(losses), inline=True)
+    e.add_field(name="📊 Tỉ lệ thắng", value=f"{rate:.1f}%", inline=True)
+    e.add_field(name="🆔 User ID", value=str(user.id), inline=True)
+    e.set_footer(text="NX88 Bot")
+    return e
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} ({bot.user.id})")
+
+@bot.tree.command(name="profile", description="Xem hồ sơ, avatar và thống kê")
+@app_commands.describe(user="Người muốn xem, để trống để xem bản thân")
+async def profile(interaction: discord.Interaction, user: discord.User | None = None):
+    await interaction.response.defer()
+    target = user or interaction.user
+    row = await bot.get_user(target)
+    await interaction.followup.send(embed=profile_embed(target, row))
+
+@bot.tree.command(name="stats", description="Xem thống kê trò chơi")
+@app_commands.describe(user="Người muốn xem")
+async def stats(interaction: discord.Interaction, user: discord.User | None = None):
+    await interaction.response.defer()
+    target = user or interaction.user
+    row = await bot.get_user(target)
+    played = row.get("games_played",0)
+    rate = row.get("wins",0) / played * 100 if played else 0
+    await interaction.followup.send(
+        f"📊 **{target.display_name}**\n"
+        f"🎮 Chơi: **{played}**\n🏆 Thắng: **{row['wins']}**\n"
+        f"💀 Thua: **{row['losses']}**\n📈 Tỉ lệ thắng: **{rate:.1f}%**"
     )
 
-# ════════════════════════════════════════════════════════════════════════════
-# BACCARAT ENDPOINTS
-# ════════════════════════════════════════════════════════════════════════════
+balance_group = app_commands.Group(name="balance", description="Quản lý tiền")
 
-@app.post("/api/baccarat/result", response_model=BaccaratResultResponse)
-async def baccarat_result(
-    request: BaccaratResultRequest,
-    authorization: str = None,
-    db: Session = Depends(get_db)
-):
-    """Log baccarat game result and update balance"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    
-    user = get_current_user(authorization, db)
-    
-    # Validate request
-    if request.bet <= 0 or request.payout < 0:
-        raise HTTPException(status_code=400, detail="Invalid bet or payout")
-    
-    profit = request.payout - request.bet
-    
-    # Update user balance
-    user.balance += profit
-    user.total_bet += request.bet
-    if request.payout > 0:
-        user.total_win += request.payout
-    
-    # Add XP for VIP progression
-    xp_gain = int(request.bet / 100000)  # 1 XP per 100k bet
-    user.xp += xp_gain
-    
-    # Check VIP level up
-    xp_thresholds = [0, 10000, 50000, 100000, 250000, 500000]
-    for level, threshold in enumerate(xp_thresholds):
-        if user.xp >= threshold:
-            user.vip_level = level
-    
-    # Record game history
-    game = GameHistory(
-        user_id=user.id,
-        game_type="baccarat",
-        bet_amount=request.bet,
-        payout_amount=request.payout,
-        profit=profit,
-        result=request.result,
-        bet_player=request.bet_player,
-        bet_banker=request.bet_banker,
-        bet_tie=request.bet_tie
-    )
-    
-    db.add(game)
-    db.commit()
-    db.refresh(user)
-    
-    return BaccaratResultResponse(
-        success=True,
-        new_balance=user.balance,
-        profit=profit,
-        message=f"Game recorded - {request.result} wins"
-    )
+@balance_group.command(name="check", description="Xem balance")
+@app_commands.describe(user="Người muốn xem")
+async def balance_check(interaction: discord.Interaction, user: discord.User | None = None):
+    await interaction.response.defer()
+    target = user or interaction.user
+    row = await bot.get_user(target)
+    await interaction.followup.send(f"💰 Balance của **{target.display_name}**: **{money(row.get('balance',0))}**")
 
-@app.get("/api/baccarat/history")
-async def baccarat_history(
-    authorization: str = None,
-    limit: int = Query(50, le=200),
-    db: Session = Depends(get_db)
-):
-    """Get user's baccarat game history"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    
-    user = get_current_user(authorization, db)
-    
-    games = db.query(GameHistory).filter(
-        GameHistory.user_id == user.id,
-        GameHistory.game_type == "baccarat"
-    ).order_by(desc(GameHistory.created_at)).limit(limit).all()
-    
-    return [
-        {
-            "id": g.id,
-            "result": g.result,
-            "bet": g.bet_amount,
-            "payout": g.payout_amount,
-            "profit": g.profit,
-            "player_score": g.player_score,
-            "banker_score": g.banker_score,
-            "created_at": g.created_at
-        }
-        for g in games
-    ]
+def admin_only():
+    async def predicate(interaction: discord.Interaction):
+        return interaction.user.guild_permissions.administrator
+    return app_commands.check(predicate)
 
-@app.get("/api/baccarat/stats")
-async def baccarat_stats(
-    authorization: str = None,
-    db: Session = Depends(get_db)
-):
-    """Get user's baccarat statistics"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    
-    user = get_current_user(authorization, db)
-    
-    games = db.query(GameHistory).filter(
-        GameHistory.user_id == user.id,
-        GameHistory.game_type == "baccarat"
-    ).all()
-    
-    total_games = len(games)
-    total_bet = sum(g.bet_amount for g in games)
-    total_win = sum(g.payout_amount for g in games)
-    total_profit = sum(g.profit for g in games)
-    
-    results = {
-        "player": sum(1 for g in games if g.result == "player"),
-        "banker": sum(1 for g in games if g.result == "banker"),
-        "tie": sum(1 for g in games if g.result == "tie")
-    }
-    
-    return {
-        "total_games": total_games,
-        "total_bet": total_bet,
-        "total_win": total_win,
-        "total_profit": total_profit,
-        "win_rate": (total_games - results["banker"] - results["tie"]) / max(1, total_games) * 100 if total_games > 0 else 0,
-        "results": results
-    }
+@balance_group.command(name="set", description="Đặt số tiền của một người")
+@app_commands.describe(user="Người dùng", amount="Số tiền mới")
+@admin_only()
+async def balance_set(interaction: discord.Interaction, user: discord.User, amount: app_commands.Range[int, 0]):
+    await interaction.response.defer(ephemeral=True)
+    await bot.update_balance(user, amount, "set")
+    await interaction.followup.send(f"✅ Đã đặt balance của **{user.display_name}** thành **{money(amount)}**.")
 
-# ════════════════════════════════════════════════════════════════════════════
-# LEADERBOARD ENDPOINTS
-# ════════════════════════════════════════════════════════════════════════════
+@balance_group.command(name="give", description="Cộng tiền cho một người")
+@app_commands.describe(user="Người dùng", amount="Số tiền cộng")
+@admin_only()
+async def balance_give(interaction: discord.Interaction, user: discord.User, amount: app_commands.Range[int, 1]):
+    await interaction.response.defer(ephemeral=True)
+    await bot.update_balance(user, amount, "add")
+    row = await bot.get_user(user)
+    await interaction.followup.send(f"💸 Đã cộng **{money(amount)}** cho **{user.display_name}**. Balance mới: **{money(row.get('balance',0))}**.")
 
-@app.get("/api/leaderboard", response_model=LeaderboardResponse)
-async def get_leaderboard(
-    mode: str = Query("balance", regex="^(balance|vip)$"),
-    limit: int = Query(100, le=200),
-    authorization: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """Get leaderboard (balance or VIP)"""
-    
-    current_user_id = None
-    current_user_rank = None
-    
-    if authorization:
+@balance_group.command(name="remove", description="Trừ tiền của một người")
+@app_commands.describe(user="Người dùng", amount="Số tiền trừ")
+@admin_only()
+async def balance_remove(interaction: discord.Interaction, user: discord.User, amount: app_commands.Range[int, 1]):
+    await interaction.response.defer(ephemeral=True)
+    await bot.update_balance(user, amount, "remove")
+    row = await bot.get_user(user)
+    await interaction.followup.send(f"➖ Đã trừ **{money(amount)}** của **{user.display_name}**. Còn: **{money(row.get('balance',0))}**.")
+
+@balance_group.command(name="reset", description="Reset balance về 0")
+@app_commands.describe(user="Người dùng")
+@admin_only()
+async def balance_reset(interaction: discord.Interaction, user: discord.User):
+    await interaction.response.defer(ephemeral=True)
+    await bot.update_balance(user, 0, "set")
+    await interaction.followup.send(f"🔄 Đã reset balance của **{user.display_name}** về **0**.")
+
+bot.tree.add_command(balance_group)
+
+@bot.tree.command(name="daily", description="Nhận thưởng hàng ngày")
+async def daily(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    row = await bot.get_user(interaction.user)
+    now = datetime.now(timezone.utc)
+    last_text = row.get("daily_at")
+    last = datetime.fromisoformat(last_text) if last_text else None
+    if last and now - last < timedelta(hours=24):
+        remaining = timedelta(hours=24) - (now - last); hours, rem = divmod(int(remaining.total_seconds()),3600); minutes=rem//60
+        await interaction.followup.send(f"⏳ Bạn đã nhận rồi. Còn khoảng **{hours}h {minutes}m**.", ephemeral=True); return
+    await bot.update_balance(interaction.user, DAILY_REWARD, "add")
+    bot.supabase.table("users").update({"daily_at":now.isoformat()}).eq("user_id",str(interaction.user.id)).execute()
+    await interaction.followup.send(f"🎁 Bạn nhận được **{money(DAILY_REWARD)}**!")
+
+@bot.tree.command(name="play", description="Chơi tung đồng xu với bot")
+@app_commands.describe(bet="Số tiền cược", choice="Chọn heads hoặc tails")
+@app_commands.choices(choice=[
+    app_commands.Choice(name="Heads", value="heads"),
+    app_commands.Choice(name="Tails", value="tails"),
+])
+async def play(interaction: discord.Interaction, bet: app_commands.Range[int, 1], choice: app_commands.Choice[str]):
+    await interaction.response.defer()
+    row = await bot.get_user(interaction.user)
+    if row["balance"] < bet:
+        await interaction.followup.send("❌ Bạn không đủ tiền để cược.", ephemeral=True)
+        return
+    result = random.choice(["heads", "tails"])
+    won = choice.value == result
+    if won:
+        await bot.update_balance(interaction.user, bet, "add")
+        await bot.record_game(interaction.user, True)
+        msg = f"🏆 **Bạn thắng!** Kết quả: **{result}**. Nhận **{money(bet)}**."
+    else:
+        await bot.update_balance(interaction.user, bet, "remove")
+        await bot.record_game(interaction.user, False)
+        msg = f"💀 **Bạn thua!** Kết quả: **{result}**. Mất **{money(bet)}**."
+    await interaction.followup.send(msg)
+
+@bot.tree.command(name="leaderboard", description="Xem bảng xếp hạng")
+@app_commands.describe(category="Loại bảng xếp hạng")
+@app_commands.choices(category=[
+    app_commands.Choice(name="💰 Balance", value="balance"),
+    app_commands.Choice(name="🏆 Wins", value="wins"),
+    app_commands.Choice(name="🎮 Games Played", value="games_played"),
+])
+async def leaderboard(interaction: discord.Interaction, category: app_commands.Choice[str] | None = None):
+    await interaction.response.defer()
+    key = category.value if category else "balance"
+    labels = {"balance":"💰 Balance", "wins":"🏆 Số trận thắng", "games_played":"🎮 Số lần chơi"}
+    rows = bot.supabase.table("users").select("*").order(key, desc=True).limit(10).execute().data
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, row in enumerate(rows):
+        medal = medals[i] if i < 3 else f"`#{i+1}`"
         try:
-            current_user_id = verify_token(authorization.replace("Bearer ", ""))
+            user = await bot.fetch_user(row.get("user_id"))
+            name = user.display_name
         except:
-            pass
-    
-    if mode == "balance":
-        # Sort by balance
-        users = db.query(User).filter(
-            User.is_banned == False
-        ).order_by(desc(User.balance)).limit(limit).all()
-    else:  # vip
-        # Sort by VIP level, then XP
-        users = db.query(User).filter(
-            User.is_banned == False
-        ).order_by(desc(User.vip_level), desc(User.xp)).limit(limit).all()
-    
-    entries = []
-    for rank, user in enumerate(users, 1):
-        if user.id == current_user_id:
-            current_user_rank = rank
-        
-        entry = LeaderboardEntry(
-            rank=rank,
-            id=user.id,
-            username=user.username,
-            vip_level=user.vip_level,
-            balance=user.balance,
-            total_win=user.total_win
-        )
-        entries.append(entry)
-    
-    total_players = db.query(func.count(User.id)).filter(
-        User.is_banned == False
-    ).scalar()
-    
-    return LeaderboardResponse(
-        entries=entries,
-        total_players=total_players,
-        current_user_rank=current_user_rank
+            name = row.get("username")
+        value = money(row.get(key,0)) if key == "balance" else str(row.get(key,0))
+        lines.append(f"{medal} **{name}** — {value}")
+    e = discord.Embed(title=f"🏅 Leaderboard: {labels[key]}", description="\n".join(lines) or "Chưa có dữ liệu.")
+    await interaction.edit_original_response(
+    content=None,
+    embed=e
+)
+
+@bot.tree.command(name="xocdia", description="Chơi Xóc Đĩa")
+@app_commands.describe(bet="Số tiền cược", choice="Chọn Chẵn hoặc Lẻ")
+@app_commands.choices(choice=[app_commands.Choice(name="⚪ Chẵn",value="even"),app_commands.Choice(name="🔴 Lẻ",value="odd")])
+async def xocdia(interaction: discord.Interaction, bet: app_commands.Range[int,1], choice: app_commands.Choice[str]):
+    await interaction.response.defer()
+    row=await bot.get_user(interaction.user)
+    if int(row.get("balance",0))<bet: await interaction.followup.send("❌ Không đủ tiền.",ephemeral=True); return
+    reds=sum(random.randint(0,1) for _ in range(4)); result="odd" if reds%2 else "even"; won=result==choice.value
+    await bot.update_balance(interaction.user,bet,"add" if won else "remove"); await bot.record_game(interaction.user,won)
+    row=await bot.get_user(interaction.user)
+    await interaction.followup.send(embed=discord.Embed(title="🎲 XÓC ĐĨA",description=f"Kết quả: **{reds} đỏ / {4-reds} trắng**\n{'🏆 Bạn thắng +' if won else '💀 Bạn thua -'}**{money(bet)}**\n💰 Số dư: **{money(row.get('balance',0))}**"))
+
+@bot.tree.command(name="taixiu", description="Chơi Tài Xỉu")
+@app_commands.describe(bet="Số tiền cược", choice="Tài hoặc Xỉu")
+@app_commands.choices(choice=[app_commands.Choice(name="🔥 Tài (11-17)",value="tai"),app_commands.Choice(name="❄️ Xỉu (4-10)",value="xiu")])
+async def taixiu(interaction: discord.Interaction, bet: app_commands.Range[int,1], choice: app_commands.Choice[str]):
+    await interaction.response.defer()
+    row=await bot.get_user(interaction.user)
+    if int(row.get("balance",0))<bet: await interaction.followup.send("❌ Không đủ tiền.",ephemeral=True); return
+    dice=[random.randint(1,6) for _ in range(3)]; total=sum(dice); result="tai" if total>=11 else "xiu"; won=result==choice.value
+    await bot.update_balance(interaction.user,bet,"add" if won else "remove"); await bot.record_game(interaction.user,won)
+    row=await bot.get_user(interaction.user)
+    await interaction.followup.send(embed=discord.Embed(title="🎲 TÀI XỈU",description=f"🎲 **{' + '.join(map(str,dice))} = {total}**\nKết quả: **{'TÀI' if result=='tai' else 'XỈU'}**\n{'🏆 Thắng +' if won else '💀 Thua -'}**{money(bet)}**\n💰 Số dư: **{money(row.get('balance',0))}**"))
+
+class HongBaoView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.claimed = set()
+
+    @discord.ui.button(
+        label="Nhận Hồng Bao",
+        style=discord.ButtonStyle.success,
+        custom_id="nx88_hongbao_claim",
+        emoji=discord.PartialEmoji(name="sheep_minecraft", id=1529319196801110046, animated=True)
     )
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        if uid in self.claimed:
+            await interaction.response.send_message("❌ Bạn đã nhận hồng bao này rồi.", ephemeral=True)
+            return
 
-# ════════════════════════════════════════════════════════════════════════════
-# SLOT ENDPOINTS
-# ════════════════════════════════════════════════════════════════════════════
+        self.claimed.add(uid)
+        amount = random.randint(1000, 10000)
+        try:
+            await bot.update_balance(interaction.user, amount, "add")
+            row = await bot.get_user(interaction.user)
+        except Exception as e:
+            self.claimed.discard(uid)
+            await interaction.response.send_message(f"❌ Không thể nhận hồng bao: {e}", ephemeral=True)
+            return
 
-@app.post("/api/slot/spin")
-async def slot_spin(
-    bet: float,
-    authorization: str = None,
-    db: Session = Depends(get_db)
+        await interaction.response.send_message(
+            f"<a:sheep_minecraft:1529319196801110046> **{interaction.user.display_name}** đã nhận **{money(amount)}** xu!\n"
+            f"💰 Số dư mới: **{money(int(row.get('balance', 0)))}** xu",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="hongbao", description="Admin tạo hồng bao cho mọi người")
+@app_commands.checks.has_permissions(administrator=True)
+async def hongbao(interaction: discord.Interaction):
+    e = discord.Embed(
+        title="🧧 HỒNG BAO NX88",
+        description=(
+            "🎉 **Hồng bao đã xuất hiện!**\n\n"
+            "Bấm nút bên dưới để nhận một phần thưởng ngẫu nhiên.\n"
+            "💰 Phần thưởng: **1.000 - 10.000 xu**\n"
+            "👤 Mỗi người chỉ nhận **1 lần cho mỗi hồng bao**."
+        )
+    )
+    e.set_footer(text=f"Tạo bởi {interaction.user.display_name} • NX88")
+    await interaction.response.send_message(embed=e, view=HongBaoView())
+
+
+baccarat_group = app_commands.Group(
+    name="baccarat",
+    description="Chơi Baccarat NX88"
+)
+
+@baccarat_group.command(
+    name="cuoc",
+    description="Cược Baccarat, tiền được trừ và chơi ngay"
+)
+@app_commands.describe(
+    money="Số tiền cược",
+    choice="Chọn cửa"
+)
+@app_commands.choices(choice=[
+    app_commands.Choice(name="PLAYER", value="player"),
+    app_commands.Choice(name="BANKER", value="banker"),
+    app_commands.Choice(name="TIE", value="tie")
+])
+async def baccarat_cuoc(
+    interaction: discord.Interaction,
+    money: int,
+    choice: app_commands.Choice[str]
 ):
-    """Log slot spin result"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing authorization")
-    
-    user = get_current_user(authorization, db)
-    
-    if user.balance < bet:
-        return {"success": False, "error": "Insufficient balance"}
-    
-    # Simulate spin result (in production, this would be secure server-side)
-    import random
-    payout_multipliers = [0, 0, 0, 1, 1.8, 2.5, 4, 10, 25, 80]
-    multiplier = random.choice(payout_multipliers)
-    payout = int(bet * multiplier)
-    profit = payout - bet
-    
-    # Update user
-    user.balance += profit
-    user.total_bet += bet
-    if payout > 0:
-        user.total_win += payout
-    
-    # Record game
-    game = GameHistory(
-        user_id=user.id,
-        game_type="slot",
-        bet_amount=bet,
-        payout_amount=payout,
-        profit=profit,
-        result="win" if payout > 0 else "loss",
-        multiplier=multiplier
+    await interaction.response.defer()
+
+    if money <= 0:
+        await interaction.followup.send(
+            "❌ Tiền cược phải lớn hơn 0.",
+            ephemeral=True
+        )
+        return
+
+    row = await bot.get_user(interaction.user)
+    balance = int(row.get("balance", 0))
+
+    if balance < money:
+        await interaction.followup.send(
+            f"❌ Không đủ tiền. Số dư: **{format_money(balance)}** xu",
+            ephemeral=True
+        )
+        return
+
+    # Trừ tiền cược trước
+    await bot.update_balance(
+        interaction.user,
+        money,
+        "remove"
     )
-    
-    db.add(game)
-    db.commit()
-    db.refresh(user)
-    
-    return {
-        "success": True,
-        "multiplier": multiplier,
-        "payout": payout,
-        "profit": profit,
-        "new_balance": user.balance
-    }
 
-# ════════════════════════════════════════════════════════════════════════════
-# HEALTH CHECK
-# ════════════════════════════════════════════════════════════════════════════
+    # Tỉ lệ Baccarat gần thực tế
+    # PLAYER: 44.6%
+    # BANKER: 45.9%
+    # TIE: 9.5%
+    roll = random.random()
 
-@app.get("/auth/discord/callback")
-async def discord_callback():
-    """OAuth callback route - serve index.html so frontend can handle the code parameter"""
-    try:
-        return FileResponse(
-            os.path.join(os.path.dirname(__file__), "index.html"),
-            media_type="text/html"
+    if roll < 0.446:
+        result = "player"
+    elif roll < 0.905:
+        result = "banker"
+    else:
+        result = "tie"
+
+    # Tính tiền trả
+    if choice.value == "player" and result == "player":
+        payout = money * 2
+
+    elif choice.value == "banker" and result == "banker":
+        payout = int(money * 1.95)
+
+    elif choice.value == "tie" and result == "tie":
+        payout = money * 8
+
+    # PLAYER/BANKER gặp TIE thì hoàn tiền cược
+    elif result == "tie" and choice.value in ("player", "banker"):
+        payout = money
+
+    else:
+        payout = 0
+
+    if payout > 0:
+        await bot.update_balance(
+            interaction.user,
+            payout,
+            "add"
         )
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Could not load index.html", "details": str(e)}
+
+    won = payout > money
+
+    await bot.record_game(
+        interaction.user,
+        won
+    )
+
+    final_row = await bot.get_user(interaction.user)
+
+    icon = {
+        "player": "🔵",
+        "banker": "🔴",
+        "tie": "🟢"
+    }[result]
+
+    result_text = {
+        "player": "PLAYER 🔵",
+        "banker": "BANKER 🔴",
+        "tie": "TIE 🟢"
+    }[result]
+
+    if payout > money:
+        status = "🎉 **THẮNG!**"
+    elif payout == money:
+        status = "🤝 **HÒA, HOÀN TIỀN!**"
+    else:
+        status = "💀 **THUA!**"
+
+    e = discord.Embed(
+        title="🃏 BACCARAT NX88",
+        description=(
+            f"👤 Người chơi: **{interaction.user.display_name}**\n\n"
+            f"💸 Cược: **{money(money)}** xu\n"
+            f"🎯 Chọn: **{choice.value.upper()}**\n"
+            f"{icon} Kết quả: **{result_text}**\n\n"
+            f"{status}\n"
+            f"🎁 Trả thưởng: **{money(payout)}** xu\n"
+            f"💰 Số dư còn lại: **{money(int(final_row.get('balance', 0)))}** xu"
         )
+    )
 
-@app.get("/")
-async def root():
-    """Health check"""
-    return {"status": "online", "version": "1.0.0", "app": "NX88 Casino API"}
+    e.set_thumbnail(
+        url=interaction.user.display_avatar.url
+    )
 
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {"status": "healthy", "timestamp": datetime.utcnow()}
+    await interaction.edit_original_response(
+    content=None,
+    embed=e
+)
+
+
+bot.tree.add_command(baccarat_group)
+
+@bot.tree.command(name="help", description="Xem danh sách lệnh NX88 Bot")
+async def help_command(interaction: discord.Interaction):
+    e = discord.Embed(title="🤖 NX88 Bot Commands")
+    e.add_field(name="👤 Người dùng", value="`/profile` `/stats` `/daily` `/play` `/xocdia` `/taixiu` `/leaderboard` `/balance check`", inline=False)
+    e.add_field(name="🛠️ Admin", value="`/balance set` `/balance give` `/balance remove` `/balance reset` `/hongbao`", inline=False)
+    e.set_footer(text="Các lệnh admin yêu cầu quyền Administrator")
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+@balance_set.error
+@balance_give.error
+@balance_remove.error
+@balance_reset.error
+@hongbao.error
+async def admin_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.CheckFailure):
+        msg = "❌ Bạn không có quyền Administrator để dùng lệnh này."
+    else:
+        msg = f"❌ Lỗi: {error}"
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.followup.send(msg, ephemeral=True)
+
+async def main():
+    async with bot:
+        await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        app,
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG
-    )
+    asyncio.run(main())
